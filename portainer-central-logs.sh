@@ -205,16 +205,29 @@ if $DRY_RUN; then
   exit 0
 fi
 
-STACK_CONTENT_JSON=$(sed 's/\\/\\\\/g' "$COMPOSE_PATH" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
+# Criar um arquivo temporário com o JSON válido
+cat > /tmp/stack_payload.json << EOF
+{
+  "name": "$STACK_NAME",
+  "stackFileContent": $(jq -Rs . < "$COMPOSE_PATH"),
+  "swarmID": "",
+  "fromAppTemplate": false,
+  "env": []
+}
+EOF
 
+# Enviar o payload usando o arquivo temporário
 STACK_RESPONSE=$(curl -sk -w "%{http_code}" -o /tmp/portainer_stack.json \
   -X POST "$PORTAINER_URL/api/stacks/create/$STACK_MODE/string?endpointId=$ENDPOINT_ID" \
   -H "Authorization: Bearer $JWT" \
   -H "Content-Type: application/json" \
-  -d "{\n    \"name\": \"$STACK_NAME\",\n    \"stackFileContent\": \"$STACK_CONTENT_JSON\",\n    \"swarmID\": \"\",\n    \"fromAppTemplate\": false,\n    \"env\": []\n  }")
+  -d @/tmp/stack_payload.json)
 
 if [[ "$STACK_RESPONSE" != "200" && "$STACK_RESPONSE" != "201" ]]; then
   echo "Erro ao criar stack (HTTP $STACK_RESPONSE)."
+  echo "Payload enviado:"
+  cat /tmp/stack_payload.json
+  echo "Resposta do servidor:"
   cat /tmp/portainer_stack.json
   exit 1
 fi
