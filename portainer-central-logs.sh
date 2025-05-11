@@ -47,13 +47,23 @@ else
   NETWORK_DRIVER="bridge"
 fi
 
-echo "Criando rede Docker 'logging' com driver $NETWORK_DRIVER..."
-docker network create --driver "$NETWORK_DRIVER" logging || echo "A rede 'logging' pode já existir."
+# Cria rede Docker se não existir
+if ! docker network ls --format '{{.Name}}' | grep -q '^logging$'; then
+  echo "Criando rede Docker 'logging' com driver $NETWORK_DRIVER..."
+  docker network create --driver "$NETWORK_DRIVER" logging
+else
+  echo "Rede Docker 'logging' já existe. Pulando..."
+fi
 
-# Cria volumes Docker
-echo "Criando volumes Docker..."
+# Cria volumes Docker se não existirem
+echo "Verificando/criando volumes Docker..."
 for VOL in loki_data grafana_data loki_config promtail_config; do
-  docker volume create "$VOL"
+  if ! docker volume ls --format '{{.Name}}' | grep -q "^$VOL\$"; then
+    echo "Criando volume $VOL..."
+    docker volume create "$VOL"
+  else
+    echo "Volume $VOL já existe. Pulando..."
+  fi
 done
 
 # Clona repositório
