@@ -150,13 +150,20 @@ copy_to_volume promtail_config config.yaml
 # ============================
 # Substituições no docker-compose.yaml
 # ============================
+# Adicionar debug para verificar se as substituições estão funcionando
+echo "Aplicando substituições no docker-compose.yaml..."
+
 if [[ "$OSTYPE" == "darwin"* ]]; then
-  sed -i '' "s|^- GF_SECURITY_ADMIN_PASSWORD=.*|- GF_SECURITY_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD|" "$COMPOSE_PATH"
-  sed -i '' -E "s|^- traefik\\.http\\.routers\\.grafana\\.rule=.*|- traefik.http.routers.grafana.rule=Host(\`$GRAFANA_URL\`)|" "$COMPOSE_PATH"
+  sed -i '' "s|{GRAFANA_ADMIN_PASSWORD}|$GRAFANA_ADMIN_PASSWORD|g" "$COMPOSE_PATH"
+  sed -i '' "s|{grafana_url_here}|$GRAFANA_URL|g" "$COMPOSE_PATH"
 else
-  sed -i "s|^- GF_SECURITY_ADMIN_PASSWORD=.*|- GF_SECURITY_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD|" "$COMPOSE_PATH"
-  sed -i -E "s|^- traefik\\.http\\.routers\\.grafana\\.rule=.*|- traefik.http.routers.grafana.rule=Host(\`$GRAFANA_URL\`)|" "$COMPOSE_PATH"
+  sed -i "s|{GRAFANA_ADMIN_PASSWORD}|$GRAFANA_ADMIN_PASSWORD|g" "$COMPOSE_PATH"
+  sed -i "s|{grafana_url_here}|$GRAFANA_URL|g" "$COMPOSE_PATH"
 fi
+
+# Verificar se as substituições foram feitas
+echo "Verificando substituições..."
+grep -n "GRAFANA_ADMIN_PASSWORD\|grafana_url_here" "$COMPOSE_PATH" || echo "Substituições aplicadas com sucesso."
 
 # ============================
 # Pergunta sobre deploy automático
