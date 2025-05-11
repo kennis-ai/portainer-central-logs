@@ -58,11 +58,10 @@ done
 
 # Clona repositório
 echo "Clonando repositório..."
-rm -rf /tmp/portainer-central-logs
-mkdir -p /tmp/portainer-central-logs
-cd /tmp/portainer-central-logs
-
-git clone https://github.com/kennis-ai/portainer-central-logs.git .
+REPO_PATH="/tmp/portainer-central-logs"
+rm -rf "$REPO_PATH"
+git clone https://github.com/kennis-ai/portainer-central-logs.git "$REPO_PATH"
+COMPOSE_PATH="$REPO_PATH/docker-compose.yaml"
 
 # Copia arquivos de configuração para os volumes
 copy_to_volume() {
@@ -70,15 +69,15 @@ copy_to_volume() {
   FILE=$2
   DEST=$(docker volume inspect "$VOL_NAME" -f '{{ .Mountpoint }}')
   echo "Copiando $FILE para $DEST"
-  cp "$FILE" "$DEST"
+  cp "$REPO_PATH/$FILE" "$DEST"
 }
 
 copy_to_volume loki_config local-config.yaml
 copy_to_volume promtail_config config.yaml
 
 # Substitui valores no docker-compose.yaml
-sed -i "s|GF_SECURITY_ADMIN_PASSWORD=.*|GF_SECURITY_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD|" docker-compose.yaml
-sed -i "s|Host\(`.*`\)|Host\(`$GRAFANA_URL`\)|" docker-compose.yaml
+sed -i "s|GF_SECURITY_ADMIN_PASSWORD=.*|GF_SECURITY_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD|" "$COMPOSE_PATH"
+sed -i "s|Host\(`.*`\)|Host\(`$GRAFANA_URL`\)|" "$COMPOSE_PATH"
 
 # Pergunta se deseja fazer o deploy automaticamente
 read -rp "Deseja fazer o deploy automático da stack via API do Portainer? (s/n): " DEPLOY_CHOICE
@@ -90,7 +89,6 @@ if [[ "$DEPLOY_CHOICE" == "s" ]]; then
   read -rp "Informe o nome da stack [grafana]: " STACK_NAME
   STACK_NAME=${STACK_NAME:-grafana}
 
-  # Login no Portainer
   echo "Realizando login no Portainer..."
   JWT=$(curl -sk -X POST "$PORTAINER_URL/api/auth" \
     -H "Content-Type: application/json" \
@@ -101,15 +99,12 @@ if [[ "$DEPLOY_CHOICE" == "s" ]]; then
     exit 1
   fi
 
-  # Detecta edição do Portainer
   echo "Detectando edição do Portainer..."
   EDITION=$(curl -sk -H "Authorization: Bearer $JWT" "$PORTAINER_URL/api/status" | jq -r .Edition)
   echo "Edição detectada: $EDITION"
 
-  # Obtém o ID do endpoint (assume apenas um local)
   ENDPOINT_ID=$(curl -sk -H "Authorization: Bearer $JWT" "$PORTAINER_URL/api/endpoints" | jq '.[0].Id')
 
-  # Realiza o deploy da stack
   echo "Realizando deploy da stack $STACK_NAME..."
   curl -sk -X POST "$PORTAINER_URL/api/stacks" \
     -H "Authorization: Bearer $JWT" \
@@ -118,7 +113,7 @@ if [[ "$DEPLOY_CHOICE" == "s" ]]; then
       \"Name\": \"$STACK_NAME\",
       \"EndpointId\": $ENDPOINT_ID,
       \"SwarmID\": \"\",
-      \"StackFileContent\": \"$(sed 's/\\/\\\\/g' docker-compose.yaml | sed 's/"/\\"/g' | tr -d '\n')\",
+      \"StackFileContent\": \"$(sed 's/\\/\\\\/g' \"$COMPOSE_PATH\" | sed 's/\"/\\\\\"/g' | tr -d '\n')\",
       \"Env\": []
     }"
 
@@ -128,10 +123,9 @@ if [[ "$DEPLOY_CHOICE" == "s" ]]; then
     sleep 5
   done
 
-  echo "\nStack implantada. Verificando serviços..."
+  echo -e "\nStack implantada. Verificando serviços..."
   docker service ls | grep "$STACK_NAME"
 
-  # Cria datasource Loki no Grafana
   echo "Criando datasource Loki no Grafana..."
   GRAFANA_HOST="https://$GRAFANA_URL"
   curl -sk -u "admin:$GRAFANA_ADMIN_PASSWORD" "$GRAFANA_HOST/api/datasources" \
@@ -148,7 +142,7 @@ if [[ "$DEPLOY_CHOICE" == "s" ]]; then
   echo "Datasource Loki criado com sucesso."
 
 else
-  echo "\n==== Copie o conteúdo abaixo e cole na interface do Portainer (Stacks) ===="
-  cat docker-compose.yaml
-  echo "\n==== Fim do conteúdo do docker-compose.yaml ===="
+  echo -e "\n==== Copie o conteúdo abaixo e cole na interface do Portainer (Stacks) ===="
+  cat "$COMPOSE_PATH"
+  echo -e "\n==== Fim do conteúdo do docker-compose.yaml ===="
 fi
