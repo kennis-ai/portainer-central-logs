@@ -414,32 +414,187 @@ EOF
     exit 1
   fi
 
-  echo "Aguardando os serviços da stack ficarem prontos..."
-  until docker service ls | grep -q "$STACK_NAME"; do
-    echo -n "."
+  # ============================
+# Aguardar todos os serviços ficarem prontos
+# ============================
+echo "Aguardando todos os serviços da stack ficarem prontos..."
+
+# Função para verificar se um serviço está pronto
+check_service_ready() {
+  local service_name=$1
+  local expected_replicas=$2
+  local mode=$3
+  
+  if [[ "$mode" == "global" ]]; then
+    # Para serviços globais, conta apenas se está rodando
+    local current=$(docker service ls --filter name="${STACK_NAME}_${service_name}" --format "{{.Replicas}}" | cut -d'/' -f1)
+    local total=$(docker service ls --filter name="${STACK_NAME}_${service_name}" --format "{{.Replicas}}" | cut -d'/' -f2)
+  else
+    # Para serviços replicados
+    local status=$(docker service ls --filter name="${STACK_NAME}_${service_name}" --format "{{.Replicas}}")
+    local current=$(echo "$status" | cut -d'/' -f1)
+    local total=$(echo "$status" | cut -d'/' -f2)
+  fi
+  
+  if [[ "$current" == "$total" ]] && [[ "$current" -gt 0 ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Aguardar cada serviço ficar pronto
+services_to_check=(
+  "grafana:1:replicated"
+  "loki:1:replicated"
+  "promtail:*:global"
+)
+
+echo ""
+for service_info in "${services_to_check[@]}"; do
+  IFS=':' read -r service expected mode <<< "$service_info"
+  
+  printf "Aguardando %-15s " "${service}..."
+  
+  # Aguarda até 5 minutos para cada serviço
+  timeout=300
+  elapsed=0
+  
+  while ! check_service_ready "$service" "$expected" "$mode"; do
+    if [[ $elapsed -ge $timeout ]]; then
+      echo "FALHOU - Timeout após ${timeout}s"
+      echo "Status atual:"
+      docker service ls --filter name="${STACK_NAME}_${service}"
+      exit 1
+    fi
+    
+    printf "."
     sleep 5
+    elapsed=$((elapsed + 5))
   done
+  
+  echo " PRONTO (${elapsed}s)"
+done
 
-  echo -e "\nStack implantada com sucesso."
-  docker service ls | grep "$STACK_NAME"
+echo ""
+echo "Todos os serviços estão prontos. Aguardando Grafana ficar acessível..."
 
-  echo "Criando datasource Loki no Grafana..."
-  GRAFANA_HOST="https://$GRAFANA_URL"
-  curl -sk -u "admin:$GRAFANA_ADMIN_PASSWORD" "$GRAFANA_HOST/api/datasources" \
+# Aguardar o Grafana ficar acessível via HTTP
+GRAFANA_HOST="https://$GRAFANA_URL"
+printf "Testando acesso ao Grafana em %s..." "$GRAFANA_HOST"
+
+timeout=120
+elapsed=0
+
+while true; do
+  if curl -s -k --connect-timeout 5 "$GRAFANA_HOST/api/health" | grep -q '"database": "ok"'; then
+    echo " PRONTO (${elapsed}s)"
+    break
+  fi
+  
+  if [[ $elapsed -ge $timeout ]]; then
+    echo " FALHOU - Timeout após ${timeout}s"
+    echo "Tentando acessar por IP direto..."
+    
+    # Tentar encontrar o IP do container do Grafana
+    GRAFANA_IP=$(docker service ps "${STACK_NAME}_grafana" --format "{{.Node}}" --filter "desired-state=running" | head -n1)
+    if [[ -n "$GRAFANA_IP" ]]; then
+      # Tentar acesso direto
+      if curl -s -k --connect-timeout 5 "http://${GRAFANA_IP}:3000/api/health" | grep -q '"database": "ok"'; then
+        echo "Grafana acessível via IP direto: ${GRAFANA_IP}:3000"
+        GRAFANA_HOST="http://${GRAFANA_IP}:3000"
+        break
+      fi
+    fi
+    
+    echo "ERRO: Grafana não está acessível"
+    echo "Logs do Grafana:"
+    docker service logs "${STACK_NAME}_grafana" --tail 20
+    exit 1
+  fi
+  
+  printf "."
+  sleep 5
+  elapsed=$((elapsed + 5))
+done
+
+# ============================
+# Criar datasource Loki
+# ============================
+echo "Criando datasource Loki no Grafana..."
+
+# Usar jq para formatar o JSON corretamente
+DATASOURCE_PAYLOAD=$(cat <<EOF | jq -c .
+{
+  "name": "Loki",
+  "type": "loki",
+  "access": "proxy",
+  "url": "http://loki:3100",
+  "basicAuth": false,
+  "isDefault": true,
+  "editable": true
+}
+EOF
+)
+
+# Tentar criar o datasource múltiplas vezes
+max_attempts=3
+attempt=1
+
+while [[ $attempt -le $max_attempts ]]; do
+  echo "Tentativa $attempt de $max_attempts..."
+  
+  RESPONSE=$(curl -s -k -w "\n%{http_code}" \
+    -u "admin:$GRAFANA_ADMIN_PASSWORD" \
+    "$GRAFANA_HOST/api/datasources" \
     -H "Content-Type: application/json" \
-    -d "{
-      \"name\": \"Loki\",
-      \"type\": \"loki\",
-      \"access\": \"proxy\",
-      \"url\": \"http://loki:3100\",
-      \"basicAuth\": false,
-      \"isDefault\": true
-    }"
-  echo "Datasource Loki criada com sucesso."
-else
-  echo -e "\n==== Copie o conteúdo abaixo e cole na interface do Portainer (Stacks) ===="
-  cat "$COMPOSE_PATH"
-  echo -e "\n==== Fim do docker-compose.yaml ===="
-fi
+    -d "$DATASOURCE_PAYLOAD")
+  
+  HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+  BODY=$(echo "$RESPONSE" | head -n-1)
+  
+  if [[ "$HTTP_CODE" == "200" ]] || [[ "$HTTP_CODE" == "409" ]]; then
+    if [[ "$HTTP_CODE" == "409" ]]; then
+      echo "Datasource já existe."
+    else
+      echo "Datasource Loki criado com sucesso."
+    fi
+    break
+  elif [[ "$HTTP_CODE" == "401" ]]; then
+    echo "Erro de autenticação. Verificando credenciais..."
+    echo "HTTP Code: $HTTP_CODE"
+    echo "Response: $BODY"
+    exit 1
+  else
+    echo "Tentativa $attempt falhou (HTTP $HTTP_CODE)"
+    echo "Response: $BODY"
+    
+    if [[ $attempt -eq $max_attempts ]]; then
+      echo "ERRO: Falhou ao criar datasource após $max_attempts tentativas"
+      exit 1
+    fi
+    
+    echo "Aguardando 10 segundos antes da próxima tentativa..."
+    sleep 10
+  fi
+  
+  attempt=$((attempt + 1))
+done
 
-echo "Deploy concluído! Logs podem ser encontrados em: $LOG_FILE"
+# ============================
+# Status final
+# ============================
+echo ""
+echo "==================== DEPLOY CONCLUÍDO ===================="
+echo "Stack implantada com sucesso!"
+echo ""
+echo "Serviços disponíveis:"
+docker service ls --filter "name=${STACK_NAME}_" --format "table {{.Name}}\t{{.Mode}}\t{{.Replicas}}\t{{.Image}}"
+echo ""
+echo "Acessos:"
+echo "  Grafana: $GRAFANA_URL"
+echo "    Usuário: admin"
+echo "    Senha: [definida no arquivo de configuração]"
+echo ""
+echo "Logs do deploy: $LOG_FILE"
+echo "======================================================"
