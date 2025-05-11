@@ -57,11 +57,11 @@ for VOL in loki_data grafana_data loki_config promtail_config; do
 done
 
 # Clona repositório
-echo "Clonando repositório..."
 REPO_PATH="/tmp/portainer-central-logs"
+COMPOSE_PATH="$REPO_PATH/docker-compose.yaml"
+echo "Clonando repositório..."
 rm -rf "$REPO_PATH"
 git clone https://github.com/kennis-ai/portainer-central-logs.git "$REPO_PATH"
-COMPOSE_PATH="$REPO_PATH/docker-compose.yaml"
 
 # Copia arquivos de configuração para os volumes
 copy_to_volume() {
@@ -76,8 +76,8 @@ copy_to_volume loki_config local-config.yaml
 copy_to_volume promtail_config config.yaml
 
 # Substitui valores no docker-compose.yaml
-sed -i "s|GF_SECURITY_ADMIN_PASSWORD=.*|GF_SECURITY_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD|" "$COMPOSE_PATH"
-sed -i "s|Host\(`.*`\)|Host\(`$GRAFANA_URL`\)|" "$COMPOSE_PATH"
+sed -i "s|^- GF_SECURITY_ADMIN_PASSWORD=.*|- GF_SECURITY_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD|" "$COMPOSE_PATH"
+sed -i -E "s|^- traefik\\.http\\.routers\\.grafana\\.rule=.*|- traefik.http.routers.grafana.rule=Host(\`$GRAFANA_URL\`)|" "$COMPOSE_PATH"
 
 # Pergunta se deseja fazer o deploy automaticamente
 read -rp "Deseja fazer o deploy automático da stack via API do Portainer? (s/n): " DEPLOY_CHOICE
@@ -100,12 +100,13 @@ if [[ "$DEPLOY_CHOICE" == "s" ]]; then
   fi
 
   echo "Detectando edição do Portainer..."
-  EDITION=$(curl -sk -H "Authorization: Bearer $JWT" "$PORTAINER_URL/api/status" | jq -r .Edition)
+  EDITION=$(curl -sk -H "Authorization: Bearer $JWT" "$PORTAINER_URL/api/system/version" | jq -r '.ServerEdition // "CE"')
   echo "Edição detectada: $EDITION"
 
   ENDPOINT_ID=$(curl -sk -H "Authorization: Bearer $JWT" "$PORTAINER_URL/api/endpoints" | jq '.[0].Id')
 
   echo "Realizando deploy da stack $STACK_NAME..."
+  STACK_CONTENT=$(sed 's/\\/\\\\/g' "$COMPOSE_PATH" | sed 's/\"/\\"/g' | tr -d '\n')
   curl -sk -X POST "$PORTAINER_URL/api/stacks" \
     -H "Authorization: Bearer $JWT" \
     -H "Content-Type: application/json" \
@@ -113,7 +114,7 @@ if [[ "$DEPLOY_CHOICE" == "s" ]]; then
       \"Name\": \"$STACK_NAME\",
       \"EndpointId\": $ENDPOINT_ID,
       \"SwarmID\": \"\",
-      \"StackFileContent\": \"$(sed 's/\\/\\\\/g' \"$COMPOSE_PATH\" | sed 's/\"/\\\\\"/g' | tr -d '\n')\",
+      \"StackFileContent\": \"$STACK_CONTENT\",
       \"Env\": []
     }"
 
