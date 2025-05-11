@@ -84,8 +84,10 @@ fi
 # ============================
 if docker info | grep -q 'Swarm: active'; then
   NETWORK_DRIVER="overlay"
+  STACK_MODE="swarm"
 else
   NETWORK_DRIVER="bridge"
+  STACK_MODE="standalone"
 fi
 
 # ============================
@@ -191,11 +193,11 @@ if [[ "$DEPLOY_CHOICE" == "s" ]]; then
 # ============================
 # Enviando stack para o Portainer
 # ============================
-echo "Enviando stack $STACK_NAME para o Portainer..."
+echo "Enviando stack $STACK_NAME para o Portainer (modo: $STACK_MODE)..."
 
 if $DRY_RUN; then
   echo "[DRY-RUN] Comando de envio da stack (simulado)."
-  echo "Edition: $EDITION"
+  echo "Modo: $STACK_MODE"
   echo "Compose file: $COMPOSE_PATH"
   echo "Endpoint ID: $ENDPOINT_ID"
   echo "Portainer URL: $PORTAINER_URL"
@@ -203,24 +205,13 @@ if $DRY_RUN; then
   exit 0
 fi
 
-STACK_CONTENT=$(sed 's/\\/\\\\/g' "$COMPOSE_PATH" | sed 's/"/\\"/g' | tr -d '\n')
+STACK_CONTENT_JSON=$(sed 's/\\/\\\\/g' "$COMPOSE_PATH" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
 
-if [[ "$EDITION" == "EE" ]]; then
-  STACK_RESPONSE=$(curl -sk -w "%{http_code}" -o /tmp/portainer_stack.json \
-    -X POST "$PORTAINER_URL/api/stacks" \
-    -H "Authorization: Bearer $JWT" \
-    -H "Content-Type: application/json" \
-    -d "{\n      \"Name\": \"$STACK_NAME\",\n      \"EndpointId\": $ENDPOINT_ID,\n      \"SwarmID\": \"\",\n      \"StackFileContent\": \"$STACK_CONTENT\",\n      \"Env\": []\n    }")
-else
-  STACK_RESPONSE=$(curl -sk -w "%{http_code}" -o /tmp/portainer_stack.json \
-    -X POST "$PORTAINER_URL/api/stacks" \
-    -H "Authorization: Bearer $JWT" \
-    -F "Name=$STACK_NAME" \
-    -F "EndpointId=$ENDPOINT_ID" \
-    -F "SwarmID=" \
-    -F "method=2" \
-    -F "file=@$COMPOSE_PATH" )
-fi
+STACK_RESPONSE=$(curl -sk -w "%{http_code}" -o /tmp/portainer_stack.json \
+  -X POST "$PORTAINER_URL/api/stacks/create/$STACK_MODE/string?endpointId=$ENDPOINT_ID" \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d "{\n    \"name\": \"$STACK_NAME\",\n    \"stackFileContent\": \"$STACK_CONTENT_JSON\",\n    \"swarmID\": \"\",\n    \"fromAppTemplate\": false,\n    \"env\": []\n  }")
 
 if [[ "$STACK_RESPONSE" != "200" && "$STACK_RESPONSE" != "201" ]]; then
   echo "Erro ao criar stack (HTTP $STACK_RESPONSE)."
