@@ -191,6 +191,34 @@ if [[ "$DEPLOY_CHOICE" == "s" ]]; then
   ENDPOINT_ID=$(curl -sk -H "Authorization: Bearer $JWT" "$PORTAINER_URL/api/endpoints" | jq '.[0].Id')
 
 # ============================
+# Obter SwarmID (necessário para modo swarm)
+# ============================
+if [[ "$STACK_MODE" == "swarm" ]]; then
+  echo "Obtendo SwarmID..."
+  
+  # Método 1: Tentar obter via API do Portainer
+  SWARM_INFO=$(curl -sk -H "Authorization: Bearer $JWT" "$PORTAINER_URL/api/endpoints/$ENDPOINT_ID/docker/swarm")
+  SWARM_ID=$(echo "$SWARM_INFO" | jq -r '.ID // empty')
+  
+  # Método 2: Se não conseguir via API, usar docker diretamente
+  if [[ -z "$SWARM_ID" ]]; then
+    echo "Obtendo SwarmID via comando docker..."
+    SWARM_ID=$(docker info --format '{{.Swarm.Cluster.ID}}' 2>/dev/null || echo "")
+  fi
+  
+  # Verificar se conseguimos obter o SwarmID
+  if [[ -z "$SWARM_ID" ]]; then
+    echo "Erro: Não foi possível obter o SwarmID. Verifique se o Swarm está ativo."
+    exit 1
+  fi
+  
+  echo "SwarmID encontrado: $SWARM_ID"
+else
+  SWARM_ID=""
+fi
+
+
+# ============================
 # Enviando stack para o Portainer
 # ============================
 echo "Enviando stack $STACK_NAME para o Portainer (modo: $STACK_MODE)..."
@@ -200,6 +228,7 @@ if $DRY_RUN; then
   echo "Modo: $STACK_MODE"
   echo "Compose file: $COMPOSE_PATH"
   echo "Endpoint ID: $ENDPOINT_ID"
+  echo "SwarmID: $SWARM_ID"
   echo "Portainer URL: $PORTAINER_URL"
   echo "Stack Name: $STACK_NAME"
   exit 0
@@ -210,7 +239,7 @@ cat > /tmp/stack_payload.json << EOF
 {
   "name": "$STACK_NAME",
   "stackFileContent": $(jq -Rs . < "$COMPOSE_PATH"),
-  "swarmID": "",
+  "swarmID": "$SWARM_ID",
   "fromAppTemplate": false,
   "env": []
 }
