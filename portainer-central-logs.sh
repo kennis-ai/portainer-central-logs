@@ -3,10 +3,14 @@
 set -euo pipefail
 
 DEBUG_MODE=false
+DRY_RUN=false
+
 if [[ "${1:-}" == "debug" ]]; then
   DEBUG_MODE=true
   echo "[DEBUG] Modo de depuração ativado."
-else
+elif [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=true
+  echo "[DRY-RUN] Nenhuma ação será realmente executada."\else
   clear
   cat << "EOF"
 
@@ -184,19 +188,45 @@ if [[ "$DEPLOY_CHOICE" == "s" ]]; then
 
   ENDPOINT_ID=$(curl -sk -H "Authorization: Bearer $JWT" "$PORTAINER_URL/api/endpoints" | jq '.[0].Id')
 
-  echo "Enviando stack $STACK_NAME para o Portainer..."
-  STACK_CONTENT=$(sed 's/\\/\\\\/g' "$COMPOSE_PATH" | sed 's/"/\\"/g' | tr -d '\n')
+# ============================
+# Enviando stack para o Portainer
+# ============================
+echo "Enviando stack $STACK_NAME para o Portainer..."
+
+if $DRY_RUN; then
+  echo "[DRY-RUN] Comando de envio da stack (simulado)."
+  echo "Edition: $EDITION"
+  echo "Compose file: $COMPOSE_PATH"
+  echo "Endpoint ID: $ENDPOINT_ID"
+  echo "Portainer URL: $PORTAINER_URL"
+  echo "Stack Name: $STACK_NAME"
+  exit 0
+fi
+
+STACK_CONTENT=$(sed 's/\\/\\\\/g' "$COMPOSE_PATH" | sed 's/"/\\"/g' | tr -d '\n')
+
+if [[ "$EDITION" == "EE" ]]; then
   STACK_RESPONSE=$(curl -sk -w "%{http_code}" -o /tmp/portainer_stack.json \
     -X POST "$PORTAINER_URL/api/stacks" \
     -H "Authorization: Bearer $JWT" \
     -H "Content-Type: application/json" \
     -d "{\n      \"Name\": \"$STACK_NAME\",\n      \"EndpointId\": $ENDPOINT_ID,\n      \"SwarmID\": \"\",\n      \"StackFileContent\": \"$STACK_CONTENT\",\n      \"Env\": []\n    }")
+else
+  STACK_RESPONSE=$(curl -sk -w "%{http_code}" -o /tmp/portainer_stack.json \
+    -X POST "$PORTAINER_URL/api/stacks" \
+    -H "Authorization: Bearer $JWT" \
+    -F "Name=$STACK_NAME" \
+    -F "EndpointId=$ENDPOINT_ID" \
+    -F "SwarmID=" \
+    -F "method=2" \
+    -F "file=@$COMPOSE_PATH" )
+fi
 
-  if [[ "$STACK_RESPONSE" != "200" && "$STACK_RESPONSE" != "201" ]]; then
-    echo "Erro ao criar stack (HTTP $STACK_RESPONSE)."
-    cat /tmp/portainer_stack.json
-    exit 1
-  fi
+if [[ "$STACK_RESPONSE" != "200" && "$STACK_RESPONSE" != "201" ]]; then
+  echo "Erro ao criar stack (HTTP $STACK_RESPONSE)."
+  cat /tmp/portainer_stack.json
+  exit 1
+fi
 
   echo "Aguardando os serviços da stack ficarem prontos..."
   until docker service ls | grep -q "$STACK_NAME"; do
