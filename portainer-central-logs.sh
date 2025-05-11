@@ -2,35 +2,13 @@
 
 set -euo pipefail
 
-# ============================
-# Configurações
-# ============================
-REPO_URL="https://github.com/kennis-ai/portainer-central-logs.git"
-REPO_PATH="/tmp/portainer-central-logs"
-COMPOSE_PATH="$REPO_PATH/docker-compose.yaml"
-LOG_FILE="portainer-deploy.log"
-
-# ============================
-# Pré-checagem de dependências
-# ============================
-for cmd in docker git jq sed curl; do
-  if ! command -v $cmd &>/dev/null; then
-    echo "Erro: $cmd não está instalado. Por favor, instale antes de continuar."
-    exit 1
-  fi
-done
-
-# ============================
-# Logging
-# ============================
-exec > >(tee -i "$LOG_FILE")
-exec 2>&1
-
-# ============================
-# Banner
-# ============================
-clear
-cat << "EOF"
+DEBUG_MODE=false
+if [[ "${1:-}" == "debug" ]]; then
+  DEBUG_MODE=true
+  echo "[DEBUG] Modo de depuração ativado."
+else
+  clear
+  cat << "EOF"
 
 ██╗  ██╗███████╗███╗   ██╗███╗   ██╗██╗███████╗    ██████╗  █████╗ ████████╗ █████╗      █████╗ ██╗
 ██║ ██╔╝██╔════╝████╗  ██║████╗  ██║██║██╔════╝    ██╔══██╗██╔══██╗╚══██╔══╝██╔══██╗    ██╔══██╗██║
@@ -61,6 +39,31 @@ cat << "EOF"
 ╚══════╝ ╚═════╝  ╚═════╝ ╚══════╝                                                              
 
 EOF
+fi
+
+# ============================
+# Configurações
+# ============================
+REPO_URL="https://github.com/kennis-ai/portainer-central-logs.git"
+REPO_PATH="/tmp/portainer-central-logs"
+COMPOSE_PATH="$REPO_PATH/docker-compose.yaml"
+LOG_FILE="portainer-deploy.log"
+
+# ============================
+# Pré-checagem de dependências
+# ============================
+for cmd in docker git jq sed curl; do
+  if ! command -v $cmd &>/dev/null; then
+    echo "Erro: $cmd não está instalado. Por favor, instale antes de continuar."
+    exit 1
+  fi
+done
+
+# ============================
+# Logging
+# ============================
+exec > >(tee -i "$LOG_FILE")
+exec 2>&1
 
 # ============================
 # Solicita entradas do usuário
@@ -183,10 +186,17 @@ if [[ "$DEPLOY_CHOICE" == "s" ]]; then
 
   echo "Enviando stack $STACK_NAME para o Portainer..."
   STACK_CONTENT=$(sed 's/\\/\\\\/g' "$COMPOSE_PATH" | sed 's/"/\\"/g' | tr -d '\n')
-  curl -sk -X POST "$PORTAINER_URL/api/stacks" \
+  STACK_RESPONSE=$(curl -sk -w "%{http_code}" -o /tmp/portainer_stack.json \
+    -X POST "$PORTAINER_URL/api/stacks" \
     -H "Authorization: Bearer $JWT" \
     -H "Content-Type: application/json" \
-    -d "{\n      \"Name\": \"$STACK_NAME\",\n      \"EndpointId\": $ENDPOINT_ID,\n      \"SwarmID\": \"\",\n      \"StackFileContent\": \"$STACK_CONTENT\",\n      \"Env\": []\n    }"
+    -d "{\n      \"Name\": \"$STACK_NAME\",\n      \"EndpointId\": $ENDPOINT_ID,\n      \"SwarmID\": \"\",\n      \"StackFileContent\": \"$STACK_CONTENT\",\n      \"Env\": []\n    }")
+
+  if [[ "$STACK_RESPONSE" != "200" && "$STACK_RESPONSE" != "201" ]]; then
+    echo "Erro ao criar stack (HTTP $STACK_RESPONSE)."
+    cat /tmp/portainer_stack.json
+    exit 1
+  fi
 
   echo "Aguardando os serviços da stack ficarem prontos..."
   until docker service ls | grep -q "$STACK_NAME"; do
